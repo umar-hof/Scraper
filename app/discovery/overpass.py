@@ -41,9 +41,16 @@ class OverpassRequestError(RuntimeError):
 class OverpassDiscovery:
     """Small, polite Overpass client using bounded bounding-box queries."""
     RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+    # Public global instances used only as bounded, rate-limited fallbacks.
+    # The configured endpoint is always tried first.
+    FALLBACK_ENDPOINTS = (
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
+    )
 
     def __init__(self, endpoint: str, user_agent: str, timeout: int = 30, max_retries: int = 3, min_interval_seconds: float = 3.0, health_ttl_seconds: int = 300):
         self.endpoint = endpoint.rstrip("/")
+        self._endpoints = tuple(dict.fromkeys((self.endpoint, *self.FALLBACK_ENDPOINTS)))
         self.headers = {"User-Agent": user_agent, "Accept": "application/json"}
         self.timeout = timeout
         self.max_retries = max(0, max_retries)
@@ -78,7 +85,8 @@ class OverpassDiscovery:
         try:
             response = await asyncio.wait_for(self.client.get(self._status_url()), timeout=min(self.timeout, 10))
             status_code = response.status_code
-            self._health_ok = response.status_code < 500
+            # 403/406 are endpoint-policy failures, not healthy responses.
+            self._health_ok = 200 <= response.status_code < 300
             return bool(self._health_ok)
         except (httpx.HTTPError, asyncio.TimeoutError) as exc:
             self._health_ok = False
@@ -86,7 +94,10 @@ class OverpassDiscovery:
             return False
         finally:
             self._health_checked_at = now
-            self.last_report = RequestReport("health", self.endpoint, status_code, time.monotonic() - started, 1, error=None if self._health_ok else "health_check_failed")
+            body = None
+            if 'response' in locals():
+                body = response.text[:500].replace("\n", " ")
+            self.last_report = RequestReport("health", self.endpoint, status_code, time.monotonic() - started, 1, error=None if self._health_ok else "health_check_failed", response_excerpt=body)
             log.info("overpass_health endpoint=%s status=%s duration=%.3f ok=%s", self.endpoint, status_code, time.monotonic() - started, self._health_ok)
 
     def _status_url(self) -> str:
@@ -97,7 +108,16 @@ class OverpassDiscovery:
         return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
     async def search(self, region: str, bbox: tuple[float, float, float, float], category: str, limit: int = 100) -> list[BusinessCandidate]:
-        if not await self.health_check():
+        healthy = False
+        for candidate in self._endpoints:
+            if candidate != self.endpoint:
+                self.endpoint = candidate
+                self._health_checked_at = None
+            if await self.health_check():
+                healthy = True
+                break
+            log.warning("overpass_endpoint_unavailable endpoint=%s status=%s", self.endpoint, getattr(self.last_report, "status_code", None))
+        if not healthy:
             health = self.last_report
             report = RequestReport("search", self.endpoint, health.status_code if health else None, health.duration_seconds if health else 0.0, 0, error="endpoint_health_check_failed")
             self.last_report = report
