@@ -145,7 +145,11 @@ class Worker:
             session.close()
 
     async def run(self, dry_run: bool = False):
-        while True:
-            await self.run_once(dry_run=dry_run)
-            if self.settings.worker_mode == "scheduled" or dry_run: break
-            await asyncio.sleep(30)
+        # OverpassDiscovery owns an httpx.AsyncClient and must stay inside its
+        # async context for health checks and searches. Keep one client for the
+        # continuous worker lifetime and close it on shutdown.
+        async with self.discovery:
+            while True:
+                await self.run_once(dry_run=dry_run)
+                if self.settings.worker_mode == "scheduled" or dry_run: break
+                await asyncio.sleep(30)
