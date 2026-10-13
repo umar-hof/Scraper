@@ -57,3 +57,38 @@ def test_sync_updates_existing_company_and_appends_new(monkeypatch):
     assert len(values.updated) == 1
     assert len(values.appended) == 1
 
+
+def test_sync_matches_existing_company_with_suffix(monkeypatch):
+    class Lead:
+        qualification_status = "Qualified"
+        designation = company_contact_number = poc_contact_number = poc_email_id = department = employee_size = li_poc_profile = "Not Found"
+        icp_score = 80
+        id = 1
+        company_name = "Arizona Soap"
+
+    class Values:
+        def __init__(self): self.updated, self.appended = [], []
+        def get(self, **kwargs): return self
+        def execute(self): return {"values": [HEADERS, ["Arizona Soap Company"]]}
+        def update(self, **kwargs): self.updated.append(kwargs); return self
+        def append(self, **kwargs): self.appended.append(kwargs); return self
+
+    values = Values()
+    class API:
+        def spreadsheets(self): return self
+        def values(self): return values
+    from googleapiclient import discovery
+    monkeypatch.setattr("app.sheets.sync.get_sheets_credentials", lambda settings, readonly=False: object())
+    monkeypatch.setattr(discovery, "build", lambda *args, **kwargs: API())
+    class Query:
+        def filter_by(self, **kwargs): return self
+        def one_or_none(self): return None
+    class Session:
+        def query(self, *args): return Query()
+        def add(self, value): pass
+        def commit(self): pass
+    settings = type("Settings", (), {"google_sheet_id": "sheet"})()
+    assert SheetsSync(settings).sync(Session(), [Lead()]) == 1
+    assert len(values.updated) == 1
+    assert len(values.appended) == 0
+

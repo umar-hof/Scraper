@@ -12,9 +12,13 @@ log = logging.getLogger("hof.sheets")
 def lead_row(lead: QualifiedLead) -> list[str]:
     return [lead.company_name, lead.designation, lead.poc_contact_number, lead.company_contact_number, lead.poc_email_id, lead.department, lead.employee_size, lead.li_poc_profile]
 
-def stable_company_identity(lead: QualifiedLead) -> str:
-    identity = normalize(lead.company_name)
+def stable_company_identity_from_name(company_name: str) -> str:
+    identity = normalize(company_name)
     return re.sub(r"\s+(incorporated|inc|llc|corp|corporation|co|company|ltd|limited)$", "", identity).strip()
+
+
+def stable_company_identity(lead: QualifiedLead) -> str:
+    return stable_company_identity_from_name(lead.company_name)
 
 def _eligible_unique(leads: list[QualifiedLead]) -> list[QualifiedLead]:
     selected: dict[str, QualifiedLead] = {}
@@ -51,7 +55,7 @@ class SheetsSync:
         if not current:
             api.spreadsheets().values().update(spreadsheetId=spreadsheet_id, range="A1:H1", valueInputOption="RAW", body={"values": [HEADERS]}).execute()
             current = [HEADERS]
-        existing_rows = {normalize(row[0]): index for index, row in enumerate(current[1:], start=2) if row and row[0].strip()}
+        existing_rows = {stable_company_identity_from_name(row[0]): index for index, row in enumerate(current[1:], start=2) if row and row[0].strip()}
         for lead in eligible:
             row = lead_row(lead)
             identity = stable_company_identity(lead)
